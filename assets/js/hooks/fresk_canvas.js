@@ -60,6 +60,12 @@ const FreskCanvas = {
       if (a) this.centerOn(a);
       this.render();
     });
+    this.handleEvent("canvas:highlight-link", ({ id }) => {
+      // Select without recentering (used right after drawing an arrow).
+      this.selectedLinkId = id;
+      this.selectedId = null;
+      this.render();
+    });
     this.handleEvent("canvas:focus-link", ({ id }) => {
       this.selectedLinkId = id;
       this.selectedId = null;
@@ -93,6 +99,8 @@ const FreskCanvas = {
 
   destroyed() {
     this.ro && this.ro.disconnect();
+    window.removeEventListener("mousemove", this.onWindowMouseMove);
+    window.removeEventListener("mouseup", this.onWindowMouseUp);
   },
 
   setData({ image_url, annotations, links, image }) {
@@ -397,8 +405,13 @@ const FreskCanvas = {
   hitBox(sx, sy, preferType = null) {
     const [ix, iy] = this.toImage(sx, sy);
     const hits = this.state.annotations.filter((a) => {
-      if (!this.visible(a)) return false;
-      if (preferType && a.type !== preferType) return false;
+      // Explicit endpoint targeting (preferType, when drawing a link) ignores
+      // layer visibility; plain selection respects it.
+      if (preferType) {
+        if (a.type !== preferType) return false;
+      } else if (!this.visible(a)) {
+        return false;
+      }
       const b = this.boxPx(a);
       return ix >= b.x1 && ix <= b.x2 && iy >= b.y1 && iy <= b.y2;
     });
@@ -492,7 +505,7 @@ const FreskCanvas = {
       this.drag = { type: "pan", sx, sy, ox: this.view.x, oy: this.view.y };
     });
 
-    window.addEventListener("mousemove", (e) => {
+    this.onWindowMouseMove = (e) => {
       const [sx, sy] = pos(e);
       if (!this.drag) {
         // click-to-link in progress: rubber-band from the pending tail to cursor
@@ -532,9 +545,9 @@ const FreskCanvas = {
             : this.hitBox(d.x0, d.y0, this.linkFrom);
         if (anchor) this.drawRubber(this.center(anchor), d.sx, d.sy);
       }
-    });
+    };
 
-    window.addEventListener("mouseup", (e) => {
+    this.onWindowMouseUp = (e) => {
       const d = this.drag;
       this.drag = null;
       if (!d) return;
@@ -573,7 +586,10 @@ const FreskCanvas = {
       }
       this.render();
       this.updateCursor();
-    });
+    };
+
+    window.addEventListener("mousemove", this.onWindowMouseMove);
+    window.addEventListener("mouseup", this.onWindowMouseUp);
 
     this.el.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {

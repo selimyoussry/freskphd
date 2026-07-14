@@ -66,12 +66,14 @@ defmodule FreskphdWeb.FreskShowLive do
     {:noreply, socket |> assign(mode: mode) |> push_event("canvas:mode", %{mode: mode})}
   end
 
-  def handle_event("toggle-layer", %{"layer" => layer}, socket) do
+  def handle_event("toggle-layer", %{"layer" => layer}, socket)
+      when layer in ~w(cards sections arrows) do
     layers = Map.update!(socket.assigns.layers, String.to_existing_atom(layer), &(not &1))
     {:noreply, socket |> assign(layers: layers) |> push_event("canvas:layers", layers)}
   end
 
-  def handle_event("set-link-endpoint", %{"which" => which, "type" => type}, socket) do
+  def handle_event("set-link-endpoint", %{"which" => which, "type" => type}, socket)
+      when which in ~w(from to) and type in ~w(card section) do
     socket = assign(socket, if(which == "from", do: :link_from, else: :link_to), type)
 
     {:noreply,
@@ -195,6 +197,10 @@ defmodule FreskphdWeb.FreskShowLive do
 
   ## Inspector form
 
+  def handle_event("annotation:save", _params, %{assigns: %{selected: nil}} = socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("annotation:save", %{"annotation" => params}, socket) do
     {:ok, _} =
       Fresks.update_annotation(
@@ -221,6 +227,7 @@ defmodule FreskphdWeb.FreskShowLive do
      |> reload()
      |> select_link(link.id)
      |> assign(tab: "arrows")
+     |> push_event("canvas:highlight-link", %{id: link.id})
      |> put_flash(:info, "Arrow added.")}
   end
 
@@ -232,6 +239,9 @@ defmodule FreskphdWeb.FreskShowLive do
     to_int(id) |> Fresks.get_link!() |> Fresks.delete_link()
     {:noreply, socket |> assign(selected_link: nil) |> reload()}
   end
+
+  # Ignore unrecognized or malformed client events instead of crashing.
+  def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   ## Helpers
 

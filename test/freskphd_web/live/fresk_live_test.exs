@@ -131,6 +131,20 @@ defmodule FreskphdWeb.FreskLiveTest do
       assert render(view) =~ "My New Card"
     end
 
+    test "malformed or unselected events are ignored without crashing", %{conn: conn} do
+      fresk = fresk_fixture()
+      {:ok, view, _html} = live(conn, ~p"/fresks/#{fresk.id}")
+
+      # save with nothing selected -> no-op guard
+      assert render_hook(view, "annotation:save", %{"annotation" => %{"title" => "x"}})
+      # unknown layer -> guard + catch-all
+      assert render_hook(view, "toggle-layer", %{"layer" => "bogus"})
+      # unknown event name -> catch-all
+      assert render_hook(view, "totally-unknown", %{})
+
+      assert render(view) =~ "Climate Fresk"
+    end
+
     test "moving an annotation updates its coordinates", %{conn: conn} do
       fresk = fresk_fixture()
       ann = card(fresk, "A", {0.1, 0.1, 0.2, 0.2})
