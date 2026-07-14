@@ -1,18 +1,13 @@
 defmodule Freskphd.Vision do
   @moduledoc """
-  Mistral vision client. Reads the text the OpenCV sidecar can't, and the
-  semantic arrow graph that CV geometry alone can't resolve.
+  Mistral vision client. Reads the printed text the OpenCV sidecar can't.
 
-  Two entry points, both taking base64-encoded PNG bytes:
+  `read_crops/1` returns one text per card/section crop, in the SAME order as the
+  input list (batched multi-image calls give a direct index → text mapping).
 
-    * `read_crops/1` — one text per card/section crop, in the SAME order as the
-      input list (batched multi-image calls give a direct index → text mapping).
-    * `read_graph/1` — a full-image structured pass returning the fresk title,
-      cards (text + color), sections (title + parent) and arrows (source →
-      target by text, plus line style and color).
-
-  All requests use structured outputs (`response_format: json_schema`), so the
-  model is forced to return valid JSON matching our schema.
+  Requests use structured outputs (`response_format: json_schema`), so the model
+  is forced to return valid JSON matching our schema. (Arrows are drawn by hand,
+  so there is no arrow-reading entry point.)
   """
 
   require Logger
@@ -76,47 +71,6 @@ defmodule Freskphd.Vision do
     end
   end
 
-  @doc """
-  Full-image structured pass. `image_b64` is the base64 PNG of the (downscaled)
-  fresk. Returns `{:ok, %{title, cards, sections, arrows}}`.
-  """
-  def read_graph(image_b64) when is_binary(image_b64) do
-    instruction =
-      "This is a Climate-Fresk-style diagram of cards linked by arrows. Extract:\n" <>
-        "- title: the big free-standing title text (\"\" if none).\n" <>
-        "- cards: every small filled colored rectangle — its exact printed text and fill color (hex).\n" <>
-        "- sections: every large rectangle that GROUPS cards — its title, and the title of its " <>
-        "parent section if it is nested inside another (null otherwise).\n" <>
-        "- arrows: every connector — the source card text, the target card text (following the " <>
-        "arrowhead), the line style (solid or dashed) and the line color (hex). Use exact card text."
-
-    content = [%{type: "text", text: instruction}, image_part(image_b64)]
-
-    schema = %{
-      type: "object",
-      additionalProperties: false,
-      properties: %{
-        title: %{type: "string"},
-        cards: array_of(%{text: :string, color: :string}, ["text", "color"]),
-        sections:
-          array_of(%{title: :string, parent_title: %{type: ["string", "null"]}}, ["title"]),
-        arrows:
-          array_of(
-            %{
-              source: :string,
-              target: :string,
-              style: %{type: "string", enum: ["solid", "dashed"]},
-              color: :string
-            },
-            ["source", "target", "style", "color"]
-          )
-      },
-      required: ["title", "cards", "sections", "arrows"]
-    }
-
-    chat(content, "fresk_graph", schema)
-  end
-
   # --- HTTP ---------------------------------------------------------------
 
   defp chat(content, schema_name, schema) do
@@ -177,19 +131,6 @@ defmodule Freskphd.Vision do
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp image_part(b64), do: %{type: "image_url", image_url: "data:image/png;base64,#{b64}"}
-
-  defp array_of(props, required) do
-    props =
-      Map.new(props, fn
-        {k, atom} when is_atom(atom) -> {k, %{type: Atom.to_string(atom)}}
-        {k, spec} -> {k, spec}
-      end)
-
-    %{
-      type: "array",
-      items: %{type: "object", additionalProperties: false, properties: props, required: required}
-    }
-  end
 
   # The model may occasionally return the wrong count; align to n defensively.
   defp pad(texts, n) do

@@ -103,6 +103,34 @@ defmodule FreskphdWeb.FreskLiveTest do
       assert ann.source == "human"
     end
 
+    test "drawing then saving a title in the inspector persists it", %{conn: conn} do
+      fresk = fresk_fixture()
+      {:ok, view, _html} = live(conn, ~p"/fresks/#{fresk.id}")
+
+      render_hook(view, "annotation:create", %{
+        "type" => "card",
+        "x1" => 0.3,
+        "y1" => 0.3,
+        "x2" => 0.4,
+        "y2" => 0.4
+      })
+
+      [ann] = Fresks.get_fresk!(fresk.id).annotations
+      assert render(view) =~ "Selected card"
+
+      render_hook(view, "annotation:save", %{
+        "annotation" => %{
+          "title" => "My New Card",
+          "type" => "card",
+          "category" => "",
+          "color" => ""
+        }
+      })
+
+      assert Fresks.get_annotation!(ann.id).title == "My New Card"
+      assert render(view) =~ "My New Card"
+    end
+
     test "moving an annotation updates its coordinates", %{conn: conn} do
       fresk = fresk_fixture()
       ann = card(fresk, "A", {0.1, 0.1, 0.2, 0.2})

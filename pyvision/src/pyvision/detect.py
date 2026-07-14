@@ -8,14 +8,14 @@ independent):
   2. cards    = solid, card-sized, filled blobs that differ from the background
   3. sections = large rectangular outlines whose interior is mostly background
                 and which contain at least one card
-  4. arrows   = thin connector strokes (black / colored, solid / dashed) left
-                over once cards and sections are masked out
+
+Arrows are not detected: they are drawn by hand in the review workspace.
 """
 
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import cv2
@@ -371,144 +371,6 @@ def _dedupe_boxes(boxes: list[tuple]) -> list[tuple]:
 
 
 # ---------------------------------------------------------------------------
-# Arrows
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class Arrow:
-    points: list[tuple[int, int]]
-    style: str  # "solid" | "dashed"
-    color_bgr: np.ndarray
-    tail: tuple[int, int]
-    head: tuple[int, int]
-    confidence: float
-
-
-# Connector colors seen on the exports: black, green, red.
-_ARROW_COLORS = {
-    "black": None,  # handled via darkness
-    "green": (35, 85),  # HSV hue range
-    "red": None,  # handled via two-sided hue
-}
-
-
-def detect_arrows(
-    scene: Scene, bg: np.ndarray, cards: list[Card], sections: list[Section]
-) -> list[Arrow]:
-    bgr = scene.bgr
-    fg = foreground_mask(bgr, bg)
-
-    # Remove card fills (dilated) so only inter-card strokes remain.
-    occupied = np.zeros(fg.shape, np.uint8)
-    for c in cards:
-        x1, y1, x2, y2 = c.box
-        pad = max(2, (x2 - x1) // 20)
-        cv2.rectangle(occupied, (x1 - pad, y1 - pad), (x2 + pad, y2 + pad), 255, -1)
-    strokes = cv2.bitwise_and(fg, cv2.bitwise_not(occupied))
-
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-
-    masks: dict[str, np.ndarray] = {}
-    masks["black"] = ((v < 110) & (s < 90)).astype(np.uint8) * 255
-    masks["green"] = ((h >= 35) & (h < 90) & (s > 60)).astype(np.uint8) * 255
-    masks["red"] = (((h < 10) | (h >= 165)) & (s > 60)).astype(np.uint8) * 255
-
-    # An arrow must land on real elements: keep only strokes whose endpoints are
-    # both near a detected card/section box (drops titles, jokes, page frame).
-    boxes = [c.box for c in cards] + [sec.box for sec in sections]
-
-    arrows: list[Arrow] = []
-    section_boxes = [sec.box for sec in sections]
-    for name, mask in masks.items():
-        mask = cv2.bitwise_and(mask, strokes)
-        # Drop section borders: they are long but form closed rectangles.
-        for sx1, sy1, sx2, sy2 in section_boxes:
-            t = max(2, (sx2 - sx1) // 60)
-            cv2.rectangle(mask, (sx1, sy1), (sx2, sy2), 0, t * 3)
-        arrows.extend(_arrows_from_mask(mask, name, scene, boxes))
-    return arrows
-
-
-def _point_near_box(pt: tuple, box: tuple, tol: float) -> bool:
-    x, y = pt
-    x1, y1, x2, y2 = box
-    dx = max(x1 - x, 0, x - x2)
-    dy = max(y1 - y, 0, y - y2)
-    return (dx * dx + dy * dy) ** 0.5 <= tol
-
-
-def _arrows_from_mask(
-    mask: np.ndarray, name: str, scene: Scene, boxes: list[tuple]
-) -> list[Arrow]:
-    # Bridge dashes so a dashed line is one component, then measure how much of
-    # that span was actually ink to decide solid vs dashed.
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    linked = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(linked, 8)
-    img_diag = (scene.w**2 + scene.h**2) ** 0.5
-    margin = max(4, int(min(scene.w, scene.h) * 0.01))
-    out: list[Arrow] = []
-    for i in range(1, n):
-        x, y, w, h, area = stats[i]
-        span = (w**2 + h**2) ** 0.5
-        if span < img_diag * 0.04:
-            continue
-        # Skip components hugging the image edge (the page frame / export margin).
-        if x <= margin and y <= margin and x + w >= scene.w - margin and y + h >= scene.h - margin:
-            continue
-        # Elongated, thin -> a connector, not a text blob.
-        thickness = area / max(1.0, span)
-        if thickness > max(6.0, img_diag * 0.01):
-            continue
-        comp = (labels == i).astype(np.uint8)
-        raw_ink = int(cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=comp)))
-        filled = float(raw_ink) / max(1.0, area)
-        style = "dashed" if filled < 0.55 else "solid"
-
-        ys, xs = np.nonzero(comp)
-        pts = np.column_stack([xs, ys]).astype(np.float32)
-        tail, head = _endpoints(pts)
-        tol = img_diag * 0.03
-        if not (
-            any(_point_near_box(tail, b, tol) for b in boxes)
-            and any(_point_near_box(head, b, tol) for b in boxes)
-        ):
-            continue
-        color = _median_color_at(scene.bgr, mask, comp)
-        out.append(
-            Arrow(
-                points=[tuple(map(int, tail)), tuple(map(int, head))],
-                style=style,
-                color_bgr=color,
-                tail=tuple(map(int, tail)),
-                head=tuple(map(int, head)),
-                confidence=0.45,
-            )
-        )
-    return out
-
-
-def _endpoints(pts: np.ndarray) -> tuple[tuple, tuple]:
-    mean = pts.mean(axis=0)
-    centered = pts - mean
-    _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    axis = vt[0]
-    proj = centered @ axis
-    return tuple(pts[proj.argmin()]), tuple(pts[proj.argmax()])
-
-
-def _median_color_at(bgr: np.ndarray, mask: np.ndarray, comp: np.ndarray) -> np.ndarray:
-    sel = cv2.bitwise_and(mask, mask, mask=comp)
-    ys, xs = np.nonzero(sel)
-    if len(xs) == 0:
-        return np.array([0, 0, 0])
-    return np.median(bgr[ys, xs], axis=0)
-
-
-# ---------------------------------------------------------------------------
 # Assembly / output
 # ---------------------------------------------------------------------------
 
@@ -516,10 +378,6 @@ def _median_color_at(bgr: np.ndarray, mask: np.ndarray, comp: np.ndarray) -> np.
 def _norm_box(box: tuple, scene: Scene) -> list[float]:
     x1, y1, x2, y2 = box
     return [x1 / scene.w, y1 / scene.h, x2 / scene.w, y2 / scene.h]
-
-
-def _norm_pt(pt: tuple, scene: Scene) -> list[float]:
-    return [pt[0] / scene.w, pt[1] / scene.h]
 
 
 def _crop_b64(scene: Scene, box: tuple) -> str:
@@ -543,10 +401,9 @@ def detect(
 
     cards = detect_cards(scene, bg)
     sections = detect_sections(scene, bg, cards)
-    arrows = detect_arrows(scene, bg, cards, sections)
 
     if debug_path:
-        _write_debug(scene, cards, sections, arrows, debug_path)
+        _write_debug(scene, cards, sections, debug_path)
 
     def card_json(c: Card) -> dict:
         d = {
@@ -569,22 +426,10 @@ def detect(
             d["title_crop_b64"] = _crop_b64(scene, (x1, y1, x2, y1 + max(12, strip)))
         return d
 
-    def arrow_json(a: Arrow) -> dict:
-        return {
-            "points": [_norm_pt(p, scene) for p in a.points],
-            "tail": _norm_pt(a.tail, scene),
-            "head": _norm_pt(a.head, scene),
-            "style": a.style,
-            "color_hex": bgr_to_hex(a.color_bgr),
-            "color_name": color_name(a.color_bgr),
-            "confidence": round(a.confidence, 2),
-        }
-
     result = {
         "image": {"width": scene.orig_w, "height": scene.orig_h},
         "cards": [card_json(c) for c in cards],
         "sections": [section_json(s) for s in sections],
-        "arrows": [arrow_json(a) for a in arrows],
     }
 
     if display:
@@ -598,7 +443,7 @@ def detect(
     return result
 
 
-def _write_debug(scene, cards, sections, arrows, path) -> None:
+def _write_debug(scene, cards, sections, path) -> None:
     img = scene.bgr.copy()
     for s in sections:
         x1, y1, x2, y2 = s.box
@@ -606,7 +451,4 @@ def _write_debug(scene, cards, sections, arrows, path) -> None:
     for c in cards:
         x1, y1, x2, y2 = c.box
         cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-    for a in arrows:
-        cv2.line(img, a.tail, a.head, (0, 200, 0), 2)
-        cv2.circle(img, a.head, 6, (0, 0, 255), -1)
     cv2.imwrite(path, img)
