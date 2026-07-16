@@ -104,7 +104,9 @@ side needs no image library. `--display` returns the downscaled PNG used for sto
   `canvas:focus-link` (down); `canvas:select`, `link:select`, `annotation:{create,move,delete}`,
   `link:{create,delete}` (up).
 - `ImageController` — `GET /fresks/:id/image/:kind` (`original`|`display`) streams the BLOB.
-- `ExportController` — `GET /export.xlsx` via `Freskphd.Fresks.export_header/0` + `export_rows/0`.
+- `ExportController` — `GET /export.xlsx` via `Freskphd.Fresks.export_sheets/0`: a three-sheet
+  workbook (**Fresks / Annotations / Arrows**), one row per stored record with every field, so
+  the full label set is reconstructable from the file.
 
 ## Data model
 
@@ -121,8 +123,10 @@ Context module `Freskphd.Fresks` (`lib/freskphd/fresks.ex`) holds all queries pl
 `create_fresk_with_image/2`, `put_image/3`, `get_image/2`, `set_status/3`,
 `replace_detection/4` (index-based link specs, transactional), `canvas_data/1`,
 geometry `get_sorted_coordinates/1` + `is_within?/2` (section→card nesting by containment),
-and the XLSX `export_header/0` + `export_rows/0` (coords **denormalized to pixels**, section
-nesting via containment, all attributes appended).
+and the XLSX `export_sheets/0` — three entity sheets (Fresks / Annotations / Arrows), each row a
+full record with primary/foreign keys and timestamps; coordinates ship as **both** the exact
+stored normalized floats **and** convenience pixels, plus derived containing-section titles. So
+100% of the labeled data reconstructs from the file (a fresk with no annotations still appears).
 
 ## Design decisions
 
