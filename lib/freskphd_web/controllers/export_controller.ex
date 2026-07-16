@@ -5,8 +5,10 @@ defmodule FreskphdWeb.ExportController do
   alias Freskphd.Fresks
 
   def export(conn, _params) do
-    rows = [Fresks.export_header() | Fresks.export_rows()]
-    workbook = %Workbook{sheets: [%Sheet{name: "rows", rows: rows}]}
+    sheets =
+      Enum.map(Fresks.export_sheets(), fn {name, rows} -> %Sheet{name: name, rows: rows} end)
+
+    workbook = %Workbook{sheets: sheets}
     filename = "#{Date.utc_today() |> Date.to_iso8601()}-fresks-export.xlsx"
 
     {:ok, {_charlist_name, binary}} = Elixlsx.write_to_memory(workbook, filename)

@@ -239,100 +239,128 @@ defmodule Freskphd.Fresks do
 
   ## Export
 
-  @export_header [
-    "fresk_id",
-    "fresk_title",
-    "fresk_date",
-    "fresk_description",
-    "annotation_id",
-    "annotation_type",
-    "annotation_title",
-    "annotation_description",
-    # Pixel coordinates in the original image (denormalized from stored 0..1).
-    "annotation_xmin",
-    "annotation_ymin",
-    "annotation_xmax",
-    "annotation_ymax",
-    "annotation_image_width",
-    "annotation_image_height",
-    "annotation_color",
-    "annotation_category",
-    "annotation_confidence",
-    "annotation_source",
-    "section_titles",
-    "link_kind",
-    "link_line_style",
-    "link_color",
-    "link_source_annotation_id",
-    "link_source_annotation_title",
-    "link_target_annotation_id",
-    "link_target_annotation_title"
-  ]
+  # The workbook has one sheet per entity — Fresks, Annotations, Arrows — and each
+  # row is one stored record carrying every field it has (including primary and
+  # foreign keys). So 100% of the labeled data, and the relationships between
+  # records, can be reconstructed from the file. Coordinates are exported both as
+  # the exact stored normalized floats (source of truth) and as convenience pixels.
 
-  def export_header, do: @export_header
+  @fresk_columns ~w(fresk_id title date description status detection_error
+                    image_width image_height inserted_at updated_at)
 
-  @doc "Flattens every fresk/annotation/link into rows matching `export_header/0`."
-  def export_rows do
-    Enum.flat_map(list_fresks(), fn fresk ->
-      w = fresk.image_width || 1
-      h = fresk.image_height || 1
+  @annotation_columns ~w(annotation_id fresk_id type title description
+                         x1 y1 x2 y2 xmin_px ymin_px xmax_px ymax_px
+                         image_width image_height color category source confidence
+                         status containing_section_titles inserted_at updated_at)
 
-      base = %{
-        "fresk_id" => fresk.id,
-        "fresk_title" => fresk.title,
-        "fresk_date" => fresk.dt,
-        "fresk_description" => fresk.description
-      }
+  @arrow_columns ~w(link_id fresk_id source_annotation_id source_annotation_title
+                    target_annotation_id target_annotation_title kind line_style
+                    color origin confidence inserted_at updated_at)
 
-      Enum.flat_map(fresk.annotations, fn ann ->
-        coords = get_sorted_coordinates(ann)
+  @doc """
+  The full export as a list of `{sheet_name, [header_row | data_rows]}` tuples —
+  one sheet per entity, every stored field a column, so the complete label set is
+  reconstructable from the file.
+  """
+  def export_sheets do
+    fresks = list_fresks()
 
-        section_titles =
-          fresk.annotations
-          |> Enum.filter(&(&1.type == "section" and &1.id != ann.id))
-          |> Enum.flat_map(fn section ->
-            if is_within?(coords, get_sorted_coordinates(section)),
-              do: [section.title],
-              else: []
-          end)
+    [
+      {"Fresks", [@fresk_columns | Enum.map(fresks, &fresk_row/1)]},
+      {"Annotations", [@annotation_columns | annotation_rows(fresks)]},
+      {"Arrows", [@arrow_columns | arrow_rows(fresks)]}
+    ]
+  end
 
-        annotation_row =
-          Map.merge(base, %{
-            "annotation_id" => ann.id,
-            "annotation_type" => ann.type,
-            "annotation_title" => ann.title,
-            "annotation_description" => ann.description,
-            "annotation_xmin" => px(coords.xmin, w),
-            "annotation_ymin" => px(coords.ymin, h),
-            "annotation_xmax" => px(coords.xmax, w),
-            "annotation_ymax" => px(coords.ymax, h),
-            "annotation_image_width" => w,
-            "annotation_image_height" => h,
-            "annotation_color" => ann.color,
-            "annotation_category" => ann.category,
-            "annotation_confidence" => ann.confidence,
-            "annotation_source" => ann.source,
-            "section_titles" => Enum.join(section_titles, ";;")
-          })
+  # Kept for callers/tests that want the flattened annotation view.
+  def export_header, do: @annotation_columns
+  def export_rows, do: annotation_rows(list_fresks())
 
-        link_rows =
-          Enum.map(ann.links, fn link ->
-            Map.merge(base, %{
-              "link_kind" => link.kind,
-              "link_line_style" => link.line_style,
-              "link_color" => link.color,
-              "link_source_annotation_id" => ann.id,
-              "link_source_annotation_title" => ann.title,
-              "link_target_annotation_id" => link.target_annotation.id,
-              "link_target_annotation_title" => link.target_annotation.title
-            })
-          end)
+  defp fresk_row(f) do
+    [
+      f.id,
+      f.title,
+      f.dt,
+      f.description,
+      f.status,
+      f.detection_error,
+      f.image_width,
+      f.image_height,
+      ts(f.inserted_at),
+      ts(f.updated_at)
+    ]
+  end
 
-        [annotation_row | link_rows]
+  defp annotation_rows(fresks) do
+    Enum.flat_map(fresks, fn f ->
+      w = f.image_width || 1
+      h = f.image_height || 1
+      sections = Enum.filter(f.annotations, &(&1.type == "section"))
+
+      Enum.map(f.annotations, fn a ->
+        coords = get_sorted_coordinates(a)
+
+        containing_titles =
+          sections
+          |> Enum.reject(&(&1.id == a.id))
+          |> Enum.filter(&is_within?(coords, get_sorted_coordinates(&1)))
+          |> Enum.map_join(";;", &(&1.title || ""))
+
+        [
+          a.id,
+          f.id,
+          a.type,
+          a.title,
+          a.description,
+          a.x1,
+          a.y1,
+          a.x2,
+          a.y2,
+          px(coords.xmin, w),
+          px(coords.ymin, h),
+          px(coords.xmax, w),
+          px(coords.ymax, h),
+          f.image_width,
+          f.image_height,
+          a.color,
+          a.category,
+          a.source,
+          a.confidence,
+          a.status,
+          containing_titles,
+          ts(a.inserted_at),
+          ts(a.updated_at)
+        ]
       end)
     end)
-    |> Enum.map(fn row -> Enum.map(@export_header, &Map.get(row, &1)) end)
   end
+
+  defp arrow_rows(fresks) do
+    Enum.flat_map(fresks, fn f ->
+      Enum.flat_map(f.annotations, fn a ->
+        Enum.map(a.links, fn l ->
+          [
+            l.id,
+            f.id,
+            a.id,
+            a.title,
+            l.target_annotation.id,
+            l.target_annotation.title,
+            l.kind,
+            l.line_style,
+            l.color,
+            l.origin,
+            l.confidence,
+            ts(l.inserted_at),
+            ts(l.updated_at)
+          ]
+        end)
+      end)
+    end)
+  end
+
+  defp ts(nil), do: nil
+  defp ts(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   # Denormalize a 0..1 coordinate to an integer pixel against a dimension.
   defp px(nil, _dim), do: nil
