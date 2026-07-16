@@ -231,7 +231,10 @@ defmodule FreskphdWeb.FreskShowLive do
      |> put_flash(:info, "Arrow added.")}
   end
 
-  def handle_event("link:update", %{"id" => id, "field" => field, "value" => value}, socket) do
+  # NB: the value param is named "val", not "value" — a `<button>` carries a native
+  # empty `value` property that LiveView folds into the payload, clobbering a
+  # `phx-value-value`. "val" sidesteps that collision.
+  def handle_event("link:update", %{"id" => id, "field" => field, "val" => value}, socket) do
     {:noreply, update_link(socket, to_int(id), field, value)}
   end
 
@@ -799,7 +802,7 @@ defmodule FreskphdWeb.FreskShowLive do
           phx-click="link:update"
           phx-value-id={@link.id}
           phx-value-field="line_style"
-          phx-value-value="solid"
+          phx-value-val="solid"
         >
           Solid
         </button>
@@ -808,7 +811,7 @@ defmodule FreskphdWeb.FreskShowLive do
           phx-click="link:update"
           phx-value-id={@link.id}
           phx-value-field="line_style"
-          phx-value-value="dashed"
+          phx-value-val="dashed"
         >
           Dashed
         </button>
@@ -822,7 +825,7 @@ defmodule FreskphdWeb.FreskShowLive do
           phx-click="link:update"
           phx-value-id={@link.id}
           phx-value-field="color"
-          phx-value-value="#16a34a"
+          phx-value-val="#16a34a"
         >
           <span class="size-3 rounded-full" style="background:#16a34a"></span> Green
         </button>
@@ -832,7 +835,7 @@ defmodule FreskphdWeb.FreskShowLive do
           phx-click="link:update"
           phx-value-id={@link.id}
           phx-value-field="color"
-          phx-value-value="#dc2626"
+          phx-value-val="#dc2626"
         >
           <span class="size-3 rounded-full" style="background:#dc2626"></span> Red
         </button>

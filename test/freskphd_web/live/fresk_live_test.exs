@@ -185,6 +185,66 @@ defmodule FreskphdWeb.FreskLiveTest do
       assert Fresks.get_fresk!(fresk.id).annotations == []
     end
 
+    test "selecting an arrow then toggling style/color persists and re-renders", %{conn: conn} do
+      fresk = fresk_fixture()
+      src = card(fresk, "Src", {0.1, 0.1, 0.2, 0.2})
+      tgt = card(fresk, "Tgt", {0.5, 0.5, 0.6, 0.6})
+
+      {:ok, link} =
+        Fresks.create_link(%{
+          "source_annotation_id" => src.id,
+          "target_annotation_id" => tgt.id,
+          "origin" => "human"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/fresks/#{fresk.id}")
+
+      # select the arrow (as the canvas or arrows-tab would)
+      render_hook(view, "link:select", %{"id" => link.id})
+      assert render(view) =~ "Selected arrow"
+
+      # click the Dashed button exactly as rendered (reads phx-value-* from the DOM)
+      view |> element("button", "Dashed") |> render_click()
+      assert Fresks.get_link!(link.id).line_style == "dashed"
+
+      # click the Red color button
+      view |> element("button", "Red") |> render_click()
+      assert Fresks.get_link!(link.id).color == "#dc2626"
+
+      # back to solid
+      view |> element("button", "Solid") |> render_click()
+      assert Fresks.get_link!(link.id).line_style == "solid"
+    end
+
+    test "link:update ignores the button's native empty value (real browser payload)", %{
+      conn: conn
+    } do
+      # A real <button> click also sends its native `value` property (""), which
+      # would clobber a `phx-value-value`. The handler must read `val` instead, so
+      # the empty `value` in the payload is harmless. Reproduce that exact payload.
+      fresk = fresk_fixture()
+      src = card(fresk, "Src", {0.1, 0.1, 0.2, 0.2})
+      tgt = card(fresk, "Tgt", {0.5, 0.5, 0.6, 0.6})
+
+      {:ok, link} =
+        Fresks.create_link(%{
+          "source_annotation_id" => src.id,
+          "target_annotation_id" => tgt.id,
+          "origin" => "human"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/fresks/#{fresk.id}")
+
+      render_hook(view, "link:update", %{
+        "id" => to_string(link.id),
+        "field" => "line_style",
+        "val" => "dashed",
+        "value" => ""
+      })
+
+      assert Fresks.get_link!(link.id).line_style == "dashed"
+    end
+
     test "validating sets the fresk status", %{conn: conn} do
       fresk = fresk_fixture()
       {:ok, view, _html} = live(conn, ~p"/fresks/#{fresk.id}")
