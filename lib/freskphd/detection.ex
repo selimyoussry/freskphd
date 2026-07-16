@@ -4,10 +4,12 @@ defmodule Freskphd.Detection do
 
     1. `pyvision` (OpenCV sidecar) — precise card/section boxes, fill colors and a
        downscaled display image.
-    2. `Freskphd.Vision` (Mistral) — the text of each card/section crop, and the
-       full-image arrow graph (source -> target by text, plus style and color).
-    3. reconcile — attach VLM text to CV boxes, and turn VLM arrows into links by
-       matching endpoint text to card text.
+    2. `Freskphd.Vision` (Mistral) — the printed text of each card/section crop.
+    3. reconcile — attach the VLM text to the CV boxes and persist.
+
+  Arrows are drawn by hand in the review workspace, not auto-detected: automated
+  arrow detection was unreliable, so detection now produces cards and sections
+  only, and the reviewer wires the arrows.
 
   Runs in the background under `Freskphd.TaskSupervisor`, broadcasting status on
   the fresk's PubSub topic. Degrades to CV-only when no Mistral key is configured.
@@ -66,18 +68,20 @@ defmodule Freskphd.Detection do
     section_titles =
       read_crops(Enum.map(det["sections"], & &1["title_crop_b64"]), fresk, :sections, "section")
 
-    progress(fresk, :arrows, "Reading the arrow graph with Mistral…")
-    graph = read_graph(det["display"]["png_b64"])
-
     cards = build_cards(det["cards"], card_texts, fresk)
     sections = build_sections(det["sections"], section_titles, cards, fresk)
-    link_specs = build_links(graph["arrows"] || [], cards, sections)
 
-    progress(fresk, :saving, "Saving #{length(cards)} cards and #{length(link_specs)} arrows…")
-    {:ok, _} = Fresks.replace_detection(fresk, cards, sections, link_specs)
+    progress(fresk, :saving, "Saving #{length(cards)} cards and #{length(sections)} sections…")
+    # Arrows are drawn by hand, so detection persists no links.
+    {:ok, _} = Fresks.replace_detection(fresk, cards, sections, [])
     {:ok, fresk} = Fresks.set_status(fresk, "review")
 
-    progress(fresk, :done, "Done — #{length(cards)} cards, #{length(link_specs)} arrows")
+    progress(
+      fresk,
+      :done,
+      "Done — #{length(cards)} cards, #{length(sections)} sections (draw arrows by hand)"
+    )
+
     {:ok, fresk}
   end
 
@@ -142,17 +146,6 @@ defmodule Freskphd.Detection do
     end
   end
 
-  defp read_graph(png_b64) do
-    case Vision.read_graph(png_b64) do
-      {:ok, graph} ->
-        graph
-
-      {:error, reason} ->
-        Logger.warning("Vision.read_graph failed (#{inspect(reason)}); no arrows")
-        %{"arrows" => [], "sections" => [], "cards" => [], "title" => ""}
-    end
-  end
-
   # --- reconciliation -----------------------------------------------------
 
   defp build_cards(cv_cards, texts, fresk) do
@@ -202,58 +195,6 @@ defmodule Freskphd.Detection do
     end)
   end
 
-  # Turn VLM arrows (source/target by card text) into index-based link specs
-  # against the combined `cards ++ sections` annotation list.
-  defp build_links(arrows, cards, sections) do
-    annotations = cards ++ sections
-
-    index_by_text =
-      annotations
-      |> Enum.with_index()
-      |> Enum.reduce(%{}, fn {a, i}, acc ->
-        case norm(a["title"]) do
-          "" -> acc
-          key -> Map.put_new(acc, key, i)
-        end
-      end)
-
-    arrows
-    |> Enum.flat_map(fn arrow ->
-      src = match_index(index_by_text, arrow["source"])
-      tgt = match_index(index_by_text, arrow["target"])
-
-      if src && tgt && src != tgt do
-        [
-          {src, tgt,
-           %{
-             "line_style" => arrow["style"],
-             "color" => arrow["color"],
-             "confidence" => 0.6
-           }}
-        ]
-      else
-        []
-      end
-    end)
-  end
-
-  defp match_index(index_by_text, text) do
-    key = norm(text)
-
-    cond do
-      key == "" -> nil
-      Map.has_key?(index_by_text, key) -> index_by_text[key]
-      true -> fuzzy_match(index_by_text, key)
-    end
-  end
-
-  # Fall back to a substring match when exact normalized text doesn't line up.
-  defp fuzzy_match(index_by_text, key) do
-    Enum.find_value(index_by_text, fn {k, i} ->
-      if String.contains?(k, key) or String.contains?(key, k), do: i
-    end)
-  end
-
   # --- helpers ------------------------------------------------------------
 
   defp norm(nil), do: ""
@@ -277,7 +218,7 @@ defmodule Freskphd.Detection do
   end
 
   @doc "Ordered detection stages, for rendering a progress checklist."
-  def stages, do: [:opencv, :cards, :sections, :arrows, :saving, :done]
+  def stages, do: [:opencv, :cards, :sections, :saving, :done]
 
   defp progress(%Fresk{id: id}, stage, text) do
     Phoenix.PubSub.broadcast(@pubsub, topic(id), {:detection, stage, text})

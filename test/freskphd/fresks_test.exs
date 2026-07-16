@@ -121,19 +121,24 @@ defmodule Freskphd.FresksTest do
   end
 
   describe "export" do
-    test "header includes the new attribute columns" do
-      header = Fresks.export_header()
-      assert "link_line_style" in header
-      assert "link_color" in header
-      assert "annotation_color" in header
-      assert "annotation_confidence" in header
+    # Fetch a sheet's {header, rows} by name, plus a column-index helper.
+    defp sheet(name) do
+      {^name, [header | rows]} = Enum.find(Fresks.export_sheets(), &(elem(&1, 0) == name))
+      idx = fn col -> Enum.find_index(header, &(&1 == col)) end
+      {header, rows, idx}
     end
 
-    test "rows denormalize coordinates to pixels" do
+    test "workbook has one sheet per entity" do
+      names = Enum.map(Fresks.export_sheets(), &elem(&1, 0))
+      assert names == ["Fresks", "Annotations", "Arrows"]
+    end
+
+    test "annotations sheet carries exact normalized coords, pixels, and status" do
       fresk = fresk_fixture(%{"title" => "Ex"})
 
-      cards = [
-        %{
+      {:ok, a} =
+        Fresks.create_annotation(%{
+          "fresk_id" => fresk.id,
           "type" => "card",
           "title" => "A",
           "x1" => 0.5,
@@ -141,20 +146,132 @@ defmodule Freskphd.FresksTest do
           "x2" => 0.6,
           "y2" => 0.5,
           "color" => "#abcdef",
+          "category" => "orange",
+          "source" => "human",
+          "status" => "validated",
           "confidence" => 0.9
-        }
-      ]
+        })
 
-      {:ok, _} = Fresks.replace_detection(fresk, cards, [], [])
+      {_h, rows, idx} = sheet("Annotations")
+      row = Enum.find(rows, &(Enum.at(&1, idx.("annotation_id")) == a.id))
 
-      header = Fresks.export_header()
-      idx = fn col -> Enum.find_index(header, &(&1 == col)) end
-      row = Enum.find(Fresks.export_rows(), &(Enum.at(&1, idx.("annotation_type")) == "card"))
+      # exact normalized floats (source of truth) round-trip losslessly
+      assert Enum.at(row, idx.("x1")) == 0.5
+      assert Enum.at(row, idx.("y1")) == 0.25
+      assert Enum.at(row, idx.("x2")) == 0.6
+      assert Enum.at(row, idx.("y2")) == 0.5
+      # convenience pixels: 0.5 * 1000 = 500 ; 0.25 * 800 = 200
+      assert Enum.at(row, idx.("xmin_px")) == 500
+      assert Enum.at(row, idx.("ymin_px")) == 200
+      # every stored attribute is present
+      assert Enum.at(row, idx.("fresk_id")) == fresk.id
+      assert Enum.at(row, idx.("color")) == "#abcdef"
+      assert Enum.at(row, idx.("category")) == "orange"
+      assert Enum.at(row, idx.("source")) == "human"
+      assert Enum.at(row, idx.("status")) == "validated"
+      assert Enum.at(row, idx.("confidence")) == 0.9
+    end
 
-      # 0.5 * 1000 = 500 ; 0.25 * 800 = 200
-      assert Enum.at(row, idx.("annotation_xmin")) == 500
-      assert Enum.at(row, idx.("annotation_ymin")) == 200
-      assert Enum.at(row, idx.("annotation_color")) == "#abcdef"
+    test "arrows sheet carries the full link record (ids, endpoints, style, color, origin)" do
+      fresk = fresk_fixture()
+
+      {:ok, src} =
+        Fresks.create_annotation(%{
+          "fresk_id" => fresk.id,
+          "type" => "card",
+          "title" => "Src",
+          "x1" => 0.1,
+          "y1" => 0.1,
+          "x2" => 0.2,
+          "y2" => 0.2
+        })
+
+      {:ok, tgt} =
+        Fresks.create_annotation(%{
+          "fresk_id" => fresk.id,
+          "type" => "section",
+          "title" => "Tgt",
+          "x1" => 0.5,
+          "y1" => 0.5,
+          "x2" => 0.6,
+          "y2" => 0.6
+        })
+
+      {:ok, link} =
+        Fresks.create_link(%{
+          "source_annotation_id" => src.id,
+          "target_annotation_id" => tgt.id,
+          "origin" => "human",
+          "line_style" => "dashed",
+          "color" => "#dc2626"
+        })
+
+      {_h, rows, idx} = sheet("Arrows")
+      row = Enum.find(rows, &(Enum.at(&1, idx.("link_id")) == link.id))
+
+      assert Enum.at(row, idx.("fresk_id")) == fresk.id
+      assert Enum.at(row, idx.("source_annotation_id")) == src.id
+      assert Enum.at(row, idx.("source_annotation_title")) == "Src"
+      assert Enum.at(row, idx.("target_annotation_id")) == tgt.id
+      assert Enum.at(row, idx.("target_annotation_title")) == "Tgt"
+      assert Enum.at(row, idx.("line_style")) == "dashed"
+      assert Enum.at(row, idx.("color")) == "#dc2626"
+      assert Enum.at(row, idx.("origin")) == "human"
+    end
+
+    test "a fresk with zero annotations still appears in the Fresks sheet" do
+      fresk = fresk_fixture(%{"title" => "Empty", "status" => "review"})
+
+      {_h, rows, idx} = sheet("Fresks")
+      row = Enum.find(rows, &(Enum.at(&1, idx.("fresk_id")) == fresk.id))
+
+      assert row, "empty fresk must not be dropped from the export"
+      assert Enum.at(row, idx.("title")) == "Empty"
+      assert Enum.at(row, idx.("status")) == "review"
+      assert Enum.at(row, idx.("image_width")) == 1000
+    end
+
+    test "every annotation and link in the DB is represented (nothing dropped)" do
+      fresk = fresk_fixture()
+
+      {:ok, a} =
+        Fresks.create_annotation(%{
+          "fresk_id" => fresk.id,
+          "type" => "card",
+          "title" => "A",
+          "x1" => 0.1,
+          "y1" => 0.1,
+          "x2" => 0.2,
+          "y2" => 0.2
+        })
+
+      {:ok, b} =
+        Fresks.create_annotation(%{
+          "fresk_id" => fresk.id,
+          "type" => "card",
+          "title" => "B",
+          "x1" => 0.3,
+          "y1" => 0.3,
+          "x2" => 0.4,
+          "y2" => 0.4
+        })
+
+      {:ok, link} =
+        Fresks.create_link(%{
+          "source_annotation_id" => a.id,
+          "target_annotation_id" => b.id,
+          "origin" => "human"
+        })
+
+      {_h, ann_rows, ai} = sheet("Annotations")
+      {_h, arrow_rows, li} = sheet("Arrows")
+
+      ann_ids = Enum.map(ann_rows, &Enum.at(&1, ai.("annotation_id")))
+      link_ids = Enum.map(arrow_rows, &Enum.at(&1, li.("link_id")))
+
+      assert a.id in ann_ids
+      assert b.id in ann_ids
+      assert link.id in link_ids
     end
   end
 end

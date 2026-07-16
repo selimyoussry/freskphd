@@ -35,24 +35,6 @@ defmodule Freskphd.VisionTest do
     end
   end
 
-  describe "read_graph/1" do
-    test "parses the structured card/section/arrow graph" do
-      graph = %{
-        "title" => "My Fresk",
-        "cards" => [%{"text" => "A", "color" => "#fff"}],
-        "sections" => [],
-        "arrows" => [%{"source" => "A", "target" => "B", "style" => "solid", "color" => "#000"}]
-      }
-
-      Req.Test.stub(Freskphd.VisionStub, fn conn ->
-        Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => Jason.encode!(graph)}}]})
-      end)
-
-      assert {:ok, %{"title" => "My Fresk", "arrows" => [arrow]}} = Vision.read_graph(@tiny)
-      assert arrow["style"] == "solid"
-    end
-  end
-
   describe "configuration" do
     test "returns :not_configured when no api key is set" do
       original = Application.get_env(:freskphd, :vision)
@@ -60,7 +42,7 @@ defmodule Freskphd.VisionTest do
       on_exit(fn -> Application.put_env(:freskphd, :vision, original) end)
 
       refute Vision.configured?()
-      assert {:error, :not_configured} = Vision.read_graph(@tiny)
+      assert {:error, :not_configured} = Vision.read_crops([@tiny])
     end
   end
 end
